@@ -36,7 +36,7 @@ let evalInstruction (stack, cfg) inst =
         | ST var -> (tl stack, (Expr.update var (hd stack) state, input, output))
         | BINOP op -> 
             let x :: y :: tail = stack in 
-            ((Expr.eval state (Expr.Binop (op, Expr.Const x, Expr.Const y)))::tail, cfg)
+            ((Expr.eval state (Expr.Binop (op, Expr.Const y, Expr.Const x)))::tail, cfg)
 
 
 let rec eval config prg = match prg with
@@ -55,7 +55,7 @@ let rec eval config prg = match prg with
  *)
 
 let rec compileExpr expr = match expr with
-    | Expr.Var x -> [ST x]  
+    | Expr.Var x -> [LD x]  
     | Expr.Const n -> [CONST n]
     | Expr.Binop (op, x, y) -> (compileExpr x) @ (compileExpr y) @ [BINOP op]
 
