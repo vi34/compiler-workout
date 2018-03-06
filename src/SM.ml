@@ -24,7 +24,23 @@ type config = int list * Stmt.config
 
    Takes a configuration and a program, and returns a configuration as a result
  *)                         
-let eval _ = failwith "Not yet implemented"
+let evalInstruction (stack, cfg) inst = 
+    let (state, input, output) = cfg in 
+    match inst with
+        | CONST n -> (n :: stack, cfg)
+        | READ -> ((hd input) :: stack, (state, tl input, output))
+        | WRITE -> (tl stack, (state, input, output @ [hd stack]))
+        | LD var -> ((state var)::stack, cfg)
+        | ST var -> (tl stack, (Expr.update var (hd stack) state, input, output))
+        | BINOP op -> 
+            let x :: y :: tail = stack in 
+            ((Expr.eval state (Expr.Binop (op, Expr.Const y, Expr.Const x)))::tail, cfg)
+
+
+let rec eval config prg = match prg with
+    | [] -> config
+    | inst :: t -> eval (evalInstruction config inst) t  
+
 
 (* Top-level evaluation
 
@@ -41,6 +57,16 @@ let run p i = let (_, (_, _, o)) = eval ([], (Expr.empty, i, [])) p in o
    Takes a program in the source language and returns an equivalent program for the
    stack machine
  *)
-let compile _ = failwith "Not yet implemented"
+let rec compileExpr expr = match expr with
+    | Expr.Var x -> [LD x]  
+    | Expr.Const n -> [CONST n]
+    | Expr.Binop (op, x, y) -> (compileExpr x) @ (compileExpr y) @ [BINOP op]
+
+
+let rec compile stmt = match stmt with
+    | Stmt.Assign (var, expr) -> (compileExpr expr) @ [ST var]
+    | Stmt.Read x -> [READ; ST x]
+    | Stmt.Write expr -> (compileExpr expr) @ [WRITE]
+    | Stmt.Seq (s1, s2) -> (compile s1) @ (compile s2)
 
                          
