@@ -5,6 +5,8 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap.Combinators
+open Ostap
+open List
        
 (* Simple expressions: syntax and semantics *)
 module Expr =
@@ -75,8 +77,25 @@ module Expr =
          DECIMAL --- a decimal constant [0-9]+ as a string
    
     *)
+
+    let specifiers lst = map (fun op -> (ostap ($(op)), fun x y -> Binop (op, x, y))) lst
+
     ostap (
-      parse: empty {failwith "Not implemented yet"}
+      parse: expr;
+      expr: 
+        !(Util.expr
+            (fun x -> x)
+            [|
+              `Lefta, specifiers ["!!"];
+              `Lefta, specifiers ["&&"];
+              `Nona, specifiers ["<="; ">="; "<"; ">"; "=="; "!="];
+              `Lefta, specifiers ["+"; "-"];
+              `Lefta, specifiers ["*"; "/"; "%"]
+            |]
+            primary
+        );
+
+      primary: x:IDENT {Var x} | n:DECIMAL {Const n} | -"(" expr -")"
     )
 
   end
@@ -109,7 +128,13 @@ module Stmt =
 
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented yet"}
+      parse: statements;
+      statements: <s::ss> : !(Util.listBy)[ostap (";")][stmt] {List.fold_left (fun a b -> Seq (a, b)) s ss};
+      stmt: 
+        x:IDENT ":=" e:!(Expr.parse) {Assign (x, e)}
+        | "write" "(" e:!(Expr.parse) ")" {Write e}
+        | "read" "(" x:IDENT ")" {Read x}
+
     )
       
   end
