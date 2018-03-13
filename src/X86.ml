@@ -80,7 +80,52 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
+let rec compile env = function
+| [] -> env, []
+| instr :: code' -> 
+  let env, asm = 
+    match instr with
+    | CONST n -> 
+      let s, env = env#allocate in 
+      env, [Mov (L n, s)]  
+    | WRITE -> 
+      let s, env = env#pop in 
+      env, [Push s; Call "Lwrite"; Pop eax]
+    | LD x -> 
+      let s, env = (env#global x)#allocate in 
+      env, [Mov (M env#loc x, s)]
+    | ST x -> 
+      let s, env = (env#global x)#pop in 
+      env, [Mov (s, M env#loc x)]
+    | READ -> 
+      let s, env = env#allocate in 
+      env, [Call "Lread"; Mov (eax, s)]
+    | BINOP op -> 
+      let suffix op = match op with
+        | ">"  -> "g"
+        | ">=" -> "ge"
+        | "<"  -> "l"
+        | "<=" -> "le"
+        | "==" -> "e"
+        | "!=" -> "ne"
+        | _ -> failwith "unknown comparison operator" in
+      let x, y, env = env#pop2 in 
+      let s, env = env#allocate in 
+      env, match op with
+        | "+" | "-" | "*" -> 
+          [Mov (y, eax); Binop (op, x, eax); Mov (eax, s)]
+        | ">" | ">=" | "<" | "<=" | "==" | "!=" -> 
+          [Mov (y, eax); Binop ("^", edx, edx); Binop ("cmp", x, eax); Set (suffix op, "%dl"); Mov (edx, s)]
+        | "!!" | "&&" -> 
+          [Binop ("^", eax, eax); Binop ("^", edx, edx); Binop ("cmp", L 0, x); Set ("nz", "%al"); 
+            Binop ("cmp", L 0, y); Set ("nz", "%dl"); Binop (op, eax, edx); Mov (edx, s)]
+        | "/" -> [Mov (y, eax); Cltd; IDiv x; Mov (eax, s)]
+        | "%" -> [Mov (y, eax); Cltd; IDiv x; Mov (edx, s)]
+    | _ -> failwith "Not yet supported"
+  in
+  let env, asm' = compile env code' in 
+  env, asm @ asm'  
+
 
 (* A set of strings *)           
 module S = Set.Make (String)
