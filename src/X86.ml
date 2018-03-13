@@ -84,6 +84,10 @@ let rec compile env = function
 | [] -> env, []
 | instr :: code' -> 
   let env, asm = 
+    let mov r1 r2 = match r1, r2 with
+        | R _, _ 
+        | _, R _ -> [Mov(r1, r2)]
+        | _, _ -> [Mov (r1, eax); Mov (eax, r2)] in
     match instr with
     | CONST n -> 
       let s, env = env#allocate in 
@@ -93,10 +97,10 @@ let rec compile env = function
       env, [Push s; Call "Lwrite"; Pop eax]
     | LD x -> 
       let s, env = (env#global x)#allocate in 
-      env, [Mov (M env#loc x, s)]
+      env, mov (M env#loc x) s
     | ST x -> 
       let s, env = (env#global x)#pop in 
-      env, [Mov (s, M env#loc x)]
+      env, mov s (M env#loc x)
     | READ -> 
       let s, env = env#allocate in 
       env, [Call "Lread"; Mov (eax, s)]
