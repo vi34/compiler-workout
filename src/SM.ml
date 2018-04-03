@@ -36,15 +36,28 @@ let rec eval env ((cstack, stack, ((st, i, o) as c)) as conf) = function
   | [] -> conf
   | insn :: prg' ->
        (match insn with
-          | BINOP op -> let y::x::stack' = stack in eval env (Expr.to_func op x y :: stack', c) prg'
-          | READ     -> let z::i' = i     in eval env (z::stack, (st, i', o)) prg'
-          | WRITE    -> let z::stack' = stack in eval env (stack', (st, i, o @ [z])) prg'
-          | CONST i  -> eval env (i::stack, c) prg'
-          | LD x     -> eval env (st x :: stack, c) prg'
-          | ST x     -> let z::stack' = stack in eval env (stack', (Expr.update x z st, i, o)) prg'
+          | BINOP op -> let y::x::stack' = stack in eval env (cstack, Expr.to_func op x y :: stack', c) prg'
+          | READ     -> let z::i' = i     in eval env (cstack, z::stack, (st, i', o)) prg'
+          | WRITE    -> let z::stack' = stack in eval env (cstack, stack', (st, i, o @ [z])) prg'
+          | CONST i  -> eval env (cstack, i::stack, c) prg'
+          | LD x     -> eval env (cstack, State.eval st x :: stack, c) prg'
+          | ST x     -> let z::stack' = stack in eval env (cstack, stack', (State.update x z st, i, o)) prg'
           | LABEL s  -> eval env conf prg'
           | JMP name -> eval env conf (env#labeled name)
-          | CJMP (cond, name) -> let x::stack' = stack in eval env (stack', c) (if ( (if cond = "nz" then x <> 0 else x = 0)) then (env#labeled name) else prg')
+          | CJMP (cond, name) -> let x::stack' = stack in eval env (cstack, stack', c) (if ( (if cond = "nz" then x <> 0 else x = 0)) then (env#labeled name) else prg')
+          | CALL f -> eval env ((prg', st)::cstack, stack, c) (env#labeled f)
+          | BEGIN (args, locals) -> 
+            let rec resolve accumulator args stack = match args, stack with
+              | [], _ -> rev accumulator, stack
+              | a::args', s::stack' -> resolve ((a, s)::accumulator) args' stack' in 
+            let resolved, stack' = resolve [] args stack in
+            let state' = (fold_left (fun s (x, v) -> State.update x v s) (State.enter st (args @ locals)) resolved, i, o) in
+            eval env (cstack, stack', state') prg'
+          | END -> (
+              match cstack with
+                | (prg', st')::cstack' -> eval env (cstack', stack, (State.leave st st', i, o)) prg'
+                | [] -> conf
+          )
        )
 
 (* Top-level evaluation
@@ -68,6 +81,7 @@ class labels =
   object (self)
     val counter = 0
     method new_label = "label_" ^ string_of_int counter, {<counter = counter + 1>}
+    method funcLabel name = "L" ^ name
   end 
 
 
@@ -112,6 +126,22 @@ let rec compile' labels =
         let labelBegin, labels1 = labels#new_label in
         let labels2, body' = compile' labels1 body in
         labels2, [LABEL labelBegin] @ body' @ cond' @ [CJMP ("z", labelBegin)]
+    | Stmt.Call (f, args) -> 
+        let compiledArgs = concat (map expr (rev args)) in
+        labels, compiledArgs @ [CALL (labels#funcLabel f)]
+
+let compileFun labels (name, (args, locals, body)) =
+  let endLbl, labels = labels#new_label in
+  let labels, compiled = compile' labels body in
+  labels, [LABEL name; BEGIN (args, locals)] @ compiled @ [LABEL endLbl; END]
 
 
-let compile (defs, program) = let resLabels, result = compile' (new labels) program in result
+let compile (defs, program) = 
+  let endLbl, labels = (new labels)#new_label in 
+  let labels, program = compile' labels program in 
+  let f (labels, funcs) (name, def) = 
+    let labels1, compiledFun = compileFun labels (labels#funcLabel name, def) 
+    in labels1, compiledFun::funcs in
+  let _, funcDefs = List.fold_left f (labels, []) defs in
+  (LABEL "main" :: program @ [LABEL endLbl]) @ [END] @ (concat funcDefs)
+

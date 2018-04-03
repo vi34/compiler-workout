@@ -6,6 +6,7 @@ open GT
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap
 open Combinators
+open List
                          
 (* States *)
 module State =
@@ -15,21 +16,24 @@ module State =
     type t = {g : string -> int; l : string -> int; scope : string list}
 
     (* Empty state *)
-    let empty = failwith "Not implemented"
+    let undef x = failwith (Printf.sprintf "Variable %s is undefined" x)
+    let empty = {g = undef; l = undef; scope = []}
 
     (* Update: non-destructively "modifies" the state s by binding the variable x 
        to value v and returns the new state w.r.t. a scope
     *)
-    let update x v s = failwith "Not implemented"
-                                
+    let update x v s = 
+      let update' x v stateFun = fun q -> if q = x then v else stateFun q in 
+      if mem x s.scope then {g = s.g; l = update' x v s.l; scope = s.scope} else {g = update' x v s.g; l = s.l; scope = s.scope}                   
+    
     (* Evals a variable in a state w.r.t. a scope *)
-    let eval s x = failwith "Not implemented" 
+    let eval s x = if mem x s.scope then s.l x else s.g x 
 
     (* Creates a new scope, based on a given state *)
-    let enter st xs = failwith "Not implemented"
+    let enter st xs = {g = st.g; l = undef; scope = xs}
 
     (* Drops a scope *)
-    let leave st st' = failwith "Not implemented"
+    let leave st st' = {g = st.g; l = st'.l; scope = st'.scope}
 
   end
     
@@ -83,7 +87,7 @@ module Expr =
     let rec eval st expr =      
       match expr with
       | Const n -> n
-      | Var   x -> st x
+      | Var   x -> State.eval st x
       | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
 
 
@@ -149,18 +153,25 @@ module Stmt =
        which returns a list of formal parameters, local variables, and a body for given definition
     *)
 
-     let rec eval ((st, i, o) as conf) stmt =
+     let rec eval env ((st, i, o) as conf) stmt =
       match stmt with
-      | Read    x       -> (match i with z::i' -> (Expr.update x z st, i', o) | _ -> failwith "Unexpected end of input")
-      | Write   e       -> (st, i, o @ [Expr.eval st e])
-      | Assign (x, e)   -> (Expr.update x (Expr.eval st e) st, i, o)
-      | Seq    (s1, s2) -> eval (eval conf s1) s2
-      | Skip            -> conf 
-      | If (cond, t, e) -> eval conf (if (Expr.eval st cond) <> 0 then t else e)
-      | While (cond, body) -> (if (Expr.eval st cond) = 0 then conf else eval (eval conf body) stmt)
-      | Repeat (body, cond) -> 
-        let (st, i, o)  = eval conf stmt in 
-          if (Expr.eval st cond) = 0 then eval (st, i, o) stmt else (st, i, o)
+        | Read    x       -> (match i with z::i' -> (State.update x z st, i', o) | _ -> failwith "Unexpected end of input")
+        | Write   e       -> (st, i, o @ [Expr.eval st e])
+        | Assign (x, e)   -> (State.update x (Expr.eval st e) st, i, o)
+        | Seq    (s1, s2) -> eval env (eval env conf s1) s2
+        | Skip            -> conf 
+        | If (cond, t, e) -> eval env conf (if (Expr.eval st cond) <> 0 then t else e)
+        | While (cond, body) -> (if (Expr.eval st cond) = 0 then conf else eval env (eval env conf body) stmt)
+        | Repeat (body, cond) -> 
+          let (st, i, o)  = eval env conf stmt in 
+            if (Expr.eval st cond) = 0 then eval env (st, i, o) stmt else (st, i, o)
+        | Call (f, args) -> 
+          let params, locals, body = env#definition f in
+          let evaluatedArgs = combine params (map (Expr.eval st) args) in 
+          let initState = State.enter st (params @ locals) in 
+          let state = fold_left (fun st (x, v) -> State.update x v st) initState evaluatedArgs in
+          let resST, resI, resO = eval env (state, i, o) body in
+          (State.leave resST st, resI, resO)
                           
 
     let rec parseElifs elifs els =  match elifs with
@@ -202,7 +213,12 @@ module Definition =
     type t = string * (string list * string list * Stmt.t)
 
     ostap (
-      parse: empty {failwith "Not implemented"}
+      arg: IDENT;
+
+      parse: %"fun" name:IDENT "(" args: !(Util.list0 arg) ")"
+        locals: (%"local" !(Util.list arg))?
+        "{" body: !(Stmt.parse) "}" 
+        { (name, (args, (match locals with None -> [] | Some l -> l), body))}
     )
 
   end
@@ -218,7 +234,12 @@ type t = Definition.t list * Stmt.t
 
    Takes a program and its input stream, and returns the output stream
 *)
-let eval (defs, body) i = failwith "Not implemented"
+let eval (defs, body) i = 
+  let module DefMap = Map.Make(String) in
+  let definitions = fold_left (fun m ((name, _) as def) -> DefMap.add name def m) DefMap.empty defs in
+  let env = (object method definition name = snd (DefMap.find name definitions) end) in
+  let _, _, output = Stmt.eval env (State.empty, i, []) body
+  in output
                                    
 (* Top-level parser *)
-let parse = failwith "Not implemented"
+let parse = ostap (!(Definition.parse)* !(Stmt.parse))
