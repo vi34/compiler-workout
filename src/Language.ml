@@ -6,6 +6,7 @@ open GT
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap
 open Combinators
+open List
                          
 (* States *)
 module State =
@@ -15,25 +16,25 @@ module State =
     type t = {g : string -> int; l : string -> int; scope : string list}
 
     (* Empty state *)
-    let empty =
-      let e x = failwith (Printf.sprintf "Undefined variable: %s" x) in
-      {g = e; l = e; scope = []}
+    let undef x = failwith (Printf.sprintf "Variable %s is undefined" x)
+    let empty = {g = undef; l = undef; scope = []}
 
     (* Update: non-destructively "modifies" the state s by binding the variable x 
        to value v and returns the new state w.r.t. a scope
     *)
-    let update x v s =
-      let u x v s = fun y -> if x = y then v else s y in
-      if List.mem x s.scope then {s with l = u x v s.l} else {s with g = u x v s.g}
 
+    let update x v s = 
+      let update' x v stateFun = fun q -> if q = x then v else stateFun q in 
+      if mem x s.scope then {g = s.g; l = update' x v s.l; scope = s.scope} else {g = update' x v s.g; l = s.l; scope = s.scope}                   
+    
     (* Evals a variable in a state w.r.t. a scope *)
-    let eval s x = (if List.mem x s.scope then s.l else s.g) x
+    let eval s x = if mem x s.scope then s.l x else s.g x 
 
     (* Creates a new scope, based on a given state *)
-    let enter st xs = {empty with g = st.g; scope = xs}
+    let enter st xs = {g = st.g; l = undef; scope = xs}
 
     (* Drops a scope *)
-    let leave st st' = {st' with g = st.g}
+    let leave st st' = {g = st.g; l = st'.l; scope = st'.scope}
 
   end
     
@@ -63,18 +64,41 @@ module Expr =
                                                             
     (* Expression evaluator
 
-          val eval : env -> config -> t -> int * config
 
-
-       Takes an environment, a configuration and an expresion, and returns another configuration. The 
-       environment supplies the following method
-
-           method definition : env -> string -> int list -> config -> config
-
-       which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration, 
-       an returns a pair: the return value for the call and the resulting configuration
+          val eval : state -> t -> int
+ 
+       Takes a state and an expression, and returns the value of the expression in 
+       the given state.
     *)                                                       
-    let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
+    let to_func op =
+      let bti   = function true -> 1 | _ -> 0 in
+      let itb b = b <> 0 in
+      let (|>) f g   = fun x y -> f (g x y) in
+      match op with
+      | "+"  -> (+)
+      | "-"  -> (-)
+      | "*"  -> ( * )
+      | "/"  -> (/)
+      | "%"  -> (mod)
+      | "<"  -> bti |> (< )
+      | "<=" -> bti |> (<=)
+      | ">"  -> bti |> (> )
+      | ">=" -> bti |> (>=)
+      | "==" -> bti |> (= )
+      | "!=" -> bti |> (<>)
+      | "&&" -> fun x y -> bti (itb x && itb y)
+      | "!!" -> fun x y -> bti (itb x || itb y)
+      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
+    
+    let rec eval st expr =      
+      match expr with
+      | Const n -> n
+      | Var   x -> State.eval st x
+      | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
+
+
+
+(*)    let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented" *)
          
     (* Expression parser. You can use the following terminals:
 
@@ -82,7 +106,26 @@ module Expr =
          DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
     *)
     ostap (                                      
-      parse: empty {failwith "Not implemented"}
+      parse:
+      !(Ostap.Util.expr 
+             (fun x -> x)
+         (Array.map (fun (a, s) -> a, 
+                           List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
+                        ) 
+              [|                
+                  `Lefta, ["!!"];
+                  `Lefta, ["&&"];
+                  `Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+                  `Lefta, ["+" ; "-"];
+                  `Lefta, ["*" ; "/"; "%"];
+              |] 
+         )
+         primary);
+      
+      primary:
+        n:DECIMAL {Const n}
+      | x:IDENT   {Var x}
+      | -"(" parse -")"
     )
     
   end
@@ -111,11 +154,56 @@ module Stmt =
        Takes an environment, a configuration and a statement, and returns another configuration. The 
        environment is the same as for expressions
     *)
-    let rec eval env ((st, i, o, r) as conf) k stmt = failwith "Not implemented"
-         
+
+     let rec eval env ((st, i, o, r) as conf) k stmt =
+      match stmt with
+        | Read    x       -> (match i with z::i' -> (State.update x z st, i', o) | _ -> failwith "Unexpected end of input")
+        | Write   e       -> (st, i, o @ [Expr.eval st e])
+        | Assign (x, e)   -> (State.update x (Expr.eval st e) st, i, o)
+        | Seq    (s1, s2) -> eval env (eval env conf s1) s2
+        | Skip            -> conf 
+        | If (cond, t, e) -> eval env conf (if (Expr.eval st cond) <> 0 then t else e)
+        | While (cond, body) -> (if (Expr.eval st cond) = 0 then conf else eval env (eval env conf body) stmt)
+        | Repeat (body, cond) -> 
+          let (st, i, o)  = eval env conf stmt in 
+            if (Expr.eval st cond) = 0 then eval env (st, i, o) stmt else (st, i, o)
+        | Call (f, args) -> 
+          let params, locals, body = env#definition f in
+          let evaluatedArgs = combine params (map (Expr.eval st) args) in 
+          let initState = State.enter st (params @ locals) in 
+          let state = fold_left (fun st (x, v) -> State.update x v st) initState evaluatedArgs in
+          let resST, resI, resO = eval env (state, i, o) body in
+          (State.leave resST st, resI, resO)
+                          
+
+    let rec parseElifs elifs els =  match elifs with
+      | [] -> els
+      | (cond, body)::elifs' -> If (cond, body, parseElifs elifs' els)
+
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented"}
+      parse:
+        s:stmt ";" ss:parse {Seq (s, ss)}
+      | stmt;
+      stmt:
+        %"read" "(" x:IDENT ")"          {Read x}
+      | %"write" "(" e:!(Expr.parse) ")" {Write e}
+      | x:IDENT ":=" e:!(Expr.parse)    {Assign (x, e)}
+      | %"skip" {Skip}
+      | %"if" cond:!(Expr.parse) %"then" th:parse 
+        elif:(%"elif" !(Expr.parse) %"then" parse)*
+        els:(%"else" parse)?
+        %"fi" { 
+        If (
+            cond,
+            th, 
+            match els with
+              | None -> parseElifs elif Skip
+              | Some body -> parseElifs elif body
+          )}
+      | %"while" cond: !(Expr.parse) %"do" body:parse %"od"  { While (cond, body) }
+      | %"repeat" body:parse %"until" cond: !(Expr.parse)    { Repeat (body, cond) }
+      | %"for" init:parse "," cond:!(Expr.parse) "," inc:parse %"do" body:parse %"od" { Seq (init, While (cond, Seq (body, inc))) }       
     )
       
   end
@@ -128,12 +216,12 @@ module Definition =
     type t = string * (string list * string list * Stmt.t)
 
     ostap (
-      arg  : IDENT;
-      parse: %"fun" name:IDENT "(" args:!(Util.list0 arg) ")"
-         locs:(%"local" !(Util.list arg))?
-        "{" body:!(Stmt.parse) "}" {
-        (name, (args, (match locs with None -> [] | Some l -> l), body))
-      }
+      arg: IDENT;
+
+      parse: %"fun" name:IDENT "(" args: !(Util.list0 arg) ")"
+        locals: (%"local" !(Util.list arg))?
+        "{" body: !(Stmt.parse) "}" 
+        { (name, (args, (match locals with None -> [] | Some l -> l), body))}
     )
 
   end
@@ -149,6 +237,7 @@ type t = Definition.t list * Stmt.t
 
    Takes a program and its input stream, and returns the output stream
 *)
+
 let eval (defs, body) i =
   let module M = Map.Make (String) in
   let m          = List.fold_left (fun m ((name, _) as def) -> M.add name def m) M.empty defs in  
