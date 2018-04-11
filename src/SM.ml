@@ -99,6 +99,7 @@ let rec compile' labels =
     | Expr.Var   x          -> [LD x]
     | Expr.Const n          -> [CONST n]
     | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
+    | Expr.Call (f, params) -> List.concat (List.map expr params) @ [CALL f]
   in
    function
     | Stmt.Seq (s1, s2)  -> 
@@ -130,6 +131,11 @@ let rec compile' labels =
     | Stmt.Call (f, args) -> 
         let compiledArgs = concat (map expr (rev args)) in
         labels, compiledArgs @ [CALL (labels#funcLabel f)]
+    | Stmt.Return r -> labels, (
+        match r with 
+          | None -> [] 
+          | Some v -> expr v
+      ) @ [END]
 
 let compileFun labels (name, (args, locals, body)) =
   let endLbl, labels = labels#new_label in

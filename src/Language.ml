@@ -90,11 +90,19 @@ module Expr =
       | "!!" -> fun x y -> bti (itb x || itb y)
       | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
     
-    let rec eval st expr =      
-      match expr with
-      | Const n -> n
-      | Var   x -> State.eval st x
-      | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
+    let rec eval env ((st, i, o, r) as conf) expr = match expr with
+      | Const n -> (st, i, o, Some n)
+      | Var   x -> (st, i, o, Some (State.eval st x))
+      | Binop (op, x, y) -> 
+        let (_, _, _, Some x') as conf = eval env conf x in
+        let (st, i, o, Some y') = eval env conf y in 
+        (st, i, o, Some (to_func op x' y')) 
+      | Call (name, args) -> 
+          let computedArgs, conf = 
+            List.fold_left 
+              (fun (acc, conf) arg -> let (_, _, _, Some compArg) as conf = eval env conf arg in compArg::acc, conf)
+              ([], conf) args in
+          env#definition env name (List.rev computedArgs) conf
 
 
 
@@ -124,7 +132,7 @@ module Expr =
       
       primary:
         n:DECIMAL {Const n}
-      | x:IDENT   {Var x}
+      | x:IDENT  s: ("(" args: !(Util.list0)[parse] ")" {Call (x, args)} | empty {Var x}) {s}
       | -"(" parse -")"
     )
     
@@ -155,26 +163,28 @@ module Stmt =
        environment is the same as for expressions
     *)
 
+    let evalSeq x stmt = match stmt with
+      | Skip -> x
+      | y    -> Seq (x, y)
+
      let rec eval env ((st, i, o, r) as conf) k stmt =
+
       match stmt with
-        | Read    x       -> (match i with z::i' -> (State.update x z st, i', o) | _ -> failwith "Unexpected end of input")
-        | Write   e       -> (st, i, o @ [Expr.eval st e])
-        | Assign (x, e)   -> (State.update x (Expr.eval st e) st, i, o)
-        | Seq    (s1, s2) -> eval env (eval env conf s1) s2
-        | Skip            -> conf 
-        | If (cond, t, e) -> eval env conf (if (Expr.eval st cond) <> 0 then t else e)
-        | While (cond, body) -> (if (Expr.eval st cond) = 0 then conf else eval env (eval env conf body) stmt)
-        | Repeat (body, cond) -> 
-          let (st, i, o)  = eval env conf stmt in 
-            if (Expr.eval st cond) = 0 then eval env (st, i, o) stmt else (st, i, o)
-        | Call (f, args) -> 
-          let params, locals, body = env#definition f in
-          let evaluatedArgs = combine params (map (Expr.eval st) args) in 
-          let initState = State.enter st (params @ locals) in 
-          let state = fold_left (fun st (x, v) -> State.update x v st) initState evaluatedArgs in
-          let resST, resI, resO = eval env (state, i, o) body in
-          (State.leave resST st, resI, resO)
+        | Read x -> eval env (match i with z::i' -> (State.update x z st, i', o, r) | _ -> failwith "Unexpected end of input") Skip k
+        | Write e -> eval env (let (st, i, o, Some x) = Expr.eval env conf e in (st, i, o @ [x], r)) Skip k
+        | Assign (x, e) -> eval env (let (st, i, o, Some rr) = Expr.eval env conf e in (State.update x rr st, i, o, r)) Skip k
+        | Seq (s1, s2) -> eval env conf (evalSeq s2 k) s1
+        | Skip -> match k with Skip -> conf | something -> eval env conf Skip k
+        | If (expr, thenIf, elseIf) -> let (_, _, _, Some x) as conf = Expr.eval env conf expr in if x <> 0 then (eval env conf k thenIf) else (eval env conf k elseIf)
+        | While (expr, loopStmt) -> let (_, _, _, Some x) as conf = Expr.eval env conf expr in
+          if (x = 0) then eval env conf Skip k else eval env conf (evalSeq stmt k) loopStmt
+        | Repeat (loopStmt, expr) ->  eval env conf (evalSeq (While (Expr.Binop ("==", expr, Expr.Const 0), loopStmt)) k) loopStmt
+        | Call (f, args) -> eval env (Expr.eval env conf (Expr.Call (f, args))) k Skip
+        | Return res -> match res with
+          | None -> (st, i, o, None)
+          | Some resExpr -> Expr.eval env conf resExpr
                           
+
 
     let rec parseElifs elifs els =  match elifs with
       | [] -> els
@@ -188,7 +198,6 @@ module Stmt =
       stmt:
         %"read" "(" x:IDENT ")"          {Read x}
       | %"write" "(" e:!(Expr.parse) ")" {Write e}
-      | x:IDENT ":=" e:!(Expr.parse)    {Assign (x, e)}
       | %"skip" {Skip}
       | %"if" cond:!(Expr.parse) %"then" th:parse 
         elif:(%"elif" !(Expr.parse) %"then" parse)*
@@ -204,6 +213,11 @@ module Stmt =
       | %"while" cond: !(Expr.parse) %"do" body:parse %"od"  { While (cond, body) }
       | %"repeat" body:parse %"until" cond: !(Expr.parse)    { Repeat (body, cond) }
       | %"for" init:parse "," cond:!(Expr.parse) "," inc:parse %"do" body:parse %"od" { Seq (init, While (cond, Seq (body, inc))) }       
+      | %"return" e:!(Expr.parse)? {Return e}
+      | x:IDENT expr: (
+            ":="  e:!(Expr.parse)                     {Assign (x, e)}
+          | "("   args:!(Util.list0)[Expr.parse] ")"  {Call (x, args)}
+        ) {expr}
     )
       
   end
