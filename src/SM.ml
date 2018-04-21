@@ -46,15 +46,15 @@ let rec eval env ((cstack, stack, ((st, i, o) as c)) as conf) = function
           | LABEL s  -> eval env conf prg'
           | JMP name -> eval env conf (env#labeled name)
           | CJMP (cond, name) -> let x::stack' = stack in eval env (cstack, stack', c) (if ( (if cond = "nz" then x <> 0 else x = 0)) then (env#labeled name) else prg')
-          | CALL f -> eval env ((prg', st)::cstack, stack, c) (env#labeled f)
-          | BEGIN (args, locals) -> 
+          | CALL (f, _, _) -> eval env ((prg', st)::cstack, stack, c) (env#labeled f)
+          | BEGIN (_, args, locals) -> 
             let rec resolve accumulator args stack = match args, stack with
               | [], _ -> rev accumulator, stack
               | a::args', s::stack' -> resolve ((a, s)::accumulator) args' stack' in 
             let resolved, stack' = resolve [] args stack in
             let state' = (fold_left (fun s (x, v) -> State.update x v s) (State.enter st (args @ locals)) resolved, i, o) in
             eval env (cstack, stack', state') prg'
-          | END -> (
+          | END | RET _ -> (
               match cstack with
                 | (prg', st')::cstack' -> eval env (cstack', stack, (State.leave st st', i, o)) prg'
                 | [] -> conf
@@ -99,7 +99,7 @@ let rec compile' labels =
     | Expr.Var   x          -> [LD x]
     | Expr.Const n          -> [CONST n]
     | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
-    | Expr.Call (f, params) -> List.concat (List.map expr params) @ [CALL f]
+    | Expr.Call (f, params) -> List.concat (List.map expr params) @ [CALL (f, List.length params, false)]
   in
    function
     | Stmt.Seq (s1, s2)  -> 
@@ -130,17 +130,17 @@ let rec compile' labels =
         labels2, [LABEL labelBegin] @ body' @ cond' @ [CJMP ("z", labelBegin)]
     | Stmt.Call (f, args) -> 
         let compiledArgs = concat (map expr (rev args)) in
-        labels, compiledArgs @ [CALL (labels#funcLabel f)]
+        labels, compiledArgs @ [CALL (labels#funcLabel f, List.length args, true)]
     | Stmt.Return r -> labels, (
         match r with 
           | None -> [] 
           | Some v -> expr v
-      ) @ [END]
+      ) @ [RET (r <> None)]
 
 let compileFun labels (name, (args, locals, body)) =
   let endLbl, labels = labels#new_label in
   let labels, compiled = compile' labels body in
-  labels, [LABEL name; BEGIN (args, locals)] @ compiled @ [LABEL endLbl; END]
+  labels, [LABEL name; BEGIN (name, args, locals)] @ compiled @ [LABEL endLbl; END]
 
 
 let compile (defs, program) = 
@@ -150,5 +150,5 @@ let compile (defs, program) =
     let labels1, compiledFun = compileFun labels (labels#funcLabel name, def) 
     in labels1, compiledFun::funcs in
   let _, funcDefs = List.fold_left f (labels, []) defs in
-  (LABEL "main" :: program @ [LABEL endLbl]) @ [END] @ (concat funcDefs)
+  (program @ [LABEL endLbl]) @ [END] @ (concat funcDefs)
 

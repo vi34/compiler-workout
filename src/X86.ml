@@ -90,10 +90,7 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-<<<<<<< HEAD
-let compile env code = failwith "Not implemented"
-                                
-=======
+
 let rec compile env = function
   | [] -> env, []
   | instr :: code' -> 
@@ -111,10 +108,10 @@ let rec compile env = function
           env, [Push s; Call "Lwrite"; Pop eax]
         | LD x -> 
           let s, env = (env#global x)#allocate in 
-          env, mov (M env#loc x) s
+          env, mov (env#loc x) s
         | ST x -> 
           let s, env = (env#global x)#pop in 
-          env, mov s (M env#loc x)
+          env, mov s (env#loc x)
         | READ -> 
           let s, env = env#allocate in 
           env, [Call "Lread"; Mov (eax, s)]
@@ -123,33 +120,51 @@ let rec compile env = function
         | CJMP (s, l) ->
               let x, env = env#pop in
               env, [Binop ("cmp", L 0, x); CJmp  (s, l)]
-        | BINOP op -> 
-          let suffix op = match op with
-            | ">"  -> "g"
-            | ">=" -> "ge"
-            | "<"  -> "l"
-            | "<=" -> "le"
-            | "==" -> "e"
-            | "!=" -> "ne"
-            | _ -> failwith "unknown comparison operator" in
-          let x, y, env = env#pop2 in 
-          let s, env = env#allocate in 
-          env, match op with
-            | "+" | "-" | "*" -> 
-              [Mov (y, eax); Binop (op, x, eax); Mov (eax, s)]
-            | ">" | ">=" | "<" | "<=" | "==" | "!=" -> 
-              [Mov (y, eax); Binop ("^", edx, edx); Binop ("cmp", x, eax); Set (suffix op, "%dl"); Mov (edx, s)]
-            | "!!" | "&&" -> 
-              [Binop ("^", eax, eax); Binop ("^", edx, edx); Binop ("cmp", L 0, x); Set ("nz", "%al"); 
-                Binop ("cmp", L 0, y); Set ("nz", "%dl"); Binop (op, eax, edx); Mov (edx, s)]
-            | "/" -> [Mov (y, eax); Cltd; IDiv x; Mov (eax, s)]
-            | "%" -> [Mov (y, eax); Cltd; IDiv x; Mov (edx, s)]
+        | BINOP op -> (
+              let suffix op = match op with
+                | ">"  -> "g"
+                | ">=" -> "ge"
+                | "<"  -> "l"
+                | "<=" -> "le"
+                | "==" -> "e"
+                | "!=" -> "ne"
+                | _ -> failwith "unknown comparison operator" in
+              let x, y, env = env#pop2 in 
+              let s, env = env#allocate in 
+              env, match op with
+                | "+" | "-" | "*" -> 
+                  [Mov (y, eax); Binop (op, x, eax); Mov (eax, s)]
+                | ">" | ">=" | "<" | "<=" | "==" | "!=" -> 
+                  [Mov (y, eax); Binop ("^", edx, edx); Binop ("cmp", x, eax); Set (suffix op, "%dl"); Mov (edx, s)]
+                | "!!" | "&&" -> 
+                  [Binop ("^", eax, eax); Binop ("^", edx, edx); Binop ("cmp", L 0, x); Set ("nz", "%al"); 
+                    Binop ("cmp", L 0, y); Set ("nz", "%dl"); Binop (op, eax, edx); Mov (edx, s)]
+                | "/" -> [Mov (y, eax); Cltd; IDiv x; Mov (eax, s)]
+                | "%" -> [Mov (y, eax); Cltd; IDiv x; Mov (edx, s)]
+                | _ -> failwith "unknown operator"
+              )
+        | BEGIN (f, args, locals) ->
+            let env = env#enter f args locals in
+            env, [Push ebp; Mov (esp, ebp); Binop ("-", M ("$" ^ env#lsize), esp)]
+        | END -> env, [Label env#epilogue; Mov (ebp, esp); Pop ebp; Ret; Meta (Printf.sprintf "\t.set\t%s,\t%d" env#lsize (env#allocated * word_size))]
+        | RET withValue -> if withValue
+            then let x, env = env#pop in env, [Mov (x, eax); Jmp env#epilogue]
+            else env, [Jmp env#epilogue]
+        | CALL (f, n, isProc) ->
+            let push_symbolic = List.map (fun x -> Push x) env#live_registers in
+            let pop_symbolic = List.map (fun x -> Pop x) @@ List.rev env#live_registers in
+            let rec init' i n f = if i >= n then [] else (f i) :: (init' (i + 1) n f) in
+            let env, rev_params = List.fold_left (fun (env, list) _ -> let s, env = env#pop in env, s::list) (env, []) (init' 0 n (fun _ -> ())) in
+            let params = List.rev rev_params in
+            let push_params = List.map (fun x -> Push x) params in
+            let env, get_result = if isProc then env, [] else (let s, env = env#allocate in env, [Mov (eax, s)]) in
+            env, push_symbolic @ push_params @ [Call f; Binop ("+", L (n * word_size), esp)] @ pop_symbolic @ get_result
+
         | _ -> failwith "Not yet supported"
     in
     let env, asm' = compile env code' in 
     env, asm @ asm'  
 
->>>>>>> hw7
 (* A set of strings *)           
 module S = Set.Make (String)
 
