@@ -83,6 +83,8 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
+let rec init' i n f = if i >= n then [] else (f i) :: (init' (i + 1) n f) 
+
 (* Symbolic stack machine evaluator
 
      compile : env -> prg -> env * instr list
@@ -90,7 +92,6 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-
 let rec compile env = function
   | [] -> env, []
   | instr :: code' -> 
@@ -153,7 +154,6 @@ let rec compile env = function
         | CALL (f, n, isProc) ->
             let push_symbolic = List.map (fun x -> Push x) env#live_registers in
             let pop_symbolic = List.map (fun x -> Pop x) @@ List.rev env#live_registers in
-            let rec init' i n f = if i >= n then [] else (f i) :: (init' (i + 1) n f) in
             let env, rev_params = List.fold_left (fun (env, list) _ -> let s, env = env#pop in env, s::list) (env, []) (init' 0 n (fun _ -> ())) in
             let params = List.rev rev_params in
             let push_params = List.map (fun x -> Push x) params in
@@ -169,7 +169,7 @@ let rec compile env = function
 module S = Set.Make (String)
 
 (* Environment implementation *)
-let make_assoc l = List.combine l (List.init (List.length l) (fun x -> x))
+let make_assoc l = List.combine l (init' 0 (List.length l) (fun x -> x))
                      
 class env =
   object (self)
